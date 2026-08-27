@@ -1,0 +1,36 @@
+# Environment
+.env
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Uploaded/generated files
+uploads/*
+data/*
+
+# ML model checkpoints
+*.pth
+*.pth.tar
+*.pt
+*.onnx
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build files
+build/
+dist/
+*.egg-info/
