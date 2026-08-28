@@ -23,8 +23,7 @@ class Reranker:
         # would be ideal, but using a general one here for simplicity
         try:
             self.model_name = config.rag.reranker_model
-            self.logger.info(f"Loading reranker model: {self.model_name}")
-            self.model = CrossEncoder(self.model_name)
+            self.model = None
             self.top_k = config.rag.reranker_top_k
         except Exception as e:
             self.logger.error(f"Error loading reranker model: {e}")
@@ -75,6 +74,13 @@ class Reranker:
                             else:
                                 doc["content"] = f"Document {i}"
             
+            # Load the reranker only when it is actually needed
+            if self.model is None:
+                self.logger.info(
+                    f"Loading reranker model: {self.model_name}"
+                )
+                self.model = CrossEncoder(self.model_name)
+
             # Create query-document pairs for scoring
             pairs = [(query, doc["content"]) for doc in documents]
             
