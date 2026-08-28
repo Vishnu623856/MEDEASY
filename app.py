@@ -37,9 +37,12 @@ from agents.rag_agent.doc_parser import MedicalDocParser
 # ============================================================
 # MEDICAL REPORT SESSION STORAGE
 # ============================================================
+
 # Stores the extracted text of the latest uploaded medical
-# report for each browser session. This lets follow-up chat
-# questions use the same report without uploading it again.
+# report for each browser session.
+#
+# This allows follow-up questions about the same report
+# without uploading the PDF again.
 REPORT_SESSIONS: Dict[str, str] = {}
 
 
@@ -185,7 +188,7 @@ class SpeechRequest(BaseModel):
 
 @app.get(
     "/",
-    response_class=HTMLResponse
+    response_class=HTMLResponse,
 )
 async def index(request: Request):
     """
@@ -228,8 +231,8 @@ def chat(
     """
     Process a normal text query through the multi-agent system.
 
-    If the current browser session has an uploaded medical report,
-    its extracted text is included as context for follow-up questions.
+    If the current browser session has an uploaded medical
+    report, its extracted text is included as context.
     """
 
     # Create a session ID if this is the first request.
@@ -237,21 +240,31 @@ def chat(
         session_id = str(uuid.uuid4())
 
     try:
-        # Get the medical report stored for this browser session.
-        report_context = REPORT_SESSIONS.get(session_id)
+
+        # ----------------------------------------------------
+        # Get stored report for this browser session
+        # ----------------------------------------------------
+
+        report_context = REPORT_SESSIONS.get(
+            session_id
+        )
 
         query = request.query
 
-        # If a report was uploaded earlier, make it available to
-        # the existing multi-agent system for follow-up questions.
+        # ----------------------------------------------------
+        # Add report context to follow-up questions
+        # ----------------------------------------------------
+
         if report_context:
+
             query = f"""
 The user previously uploaded a medical report.
 
-Use the following medical report as context when the user's
-question relates to that report. Base your answer on the
-report content and do not invent values or findings that are
-not present in it.
+Use the following medical report as context when the
+user's question relates to that report.
+
+Base your answer on the report content and do not
+invent values or findings that are not present in it.
 
 MEDICAL REPORT:
 ----------------
@@ -262,14 +275,23 @@ USER QUESTION:
 {request.query}
 """
 
+        # ----------------------------------------------------
+        # Process through multi-agent system
+        # ----------------------------------------------------
+
         response_data = process_query(
             query,
             conversation_history=request.conversation_history,
         )
 
-        response_text = response_data["messages"][-1].content
+        response_text = (
+            response_data["messages"][-1].content
+        )
 
-        # Keep the session alive for subsequent questions.
+        # ----------------------------------------------------
+        # Keep session alive
+        # ----------------------------------------------------
+
         response.set_cookie(
             key="session_id",
             value=session_id,
@@ -281,38 +303,52 @@ USER QUESTION:
             "agent": response_data["agent_name"],
         }
 
-        # Skin lesion result image.
+        # ----------------------------------------------------
+        # Skin lesion result image
+        # ----------------------------------------------------
+
         if (
             response_data["agent_name"]
             == "SKIN_LESION_AGENT, HUMAN_VALIDATION"
         ):
+
             segmentation_path = os.path.join(
                 SKIN_LESION_OUTPUT,
                 "segmentation_plot.png",
             )
 
-            if os.path.exists(segmentation_path):
+            if os.path.exists(
+                segmentation_path
+            ):
+
                 result["result_image"] = (
-                    "/uploads/skin_lesion_output/"
+                    "/uploads/"
+                    "skin_lesion_output/"
                     "segmentation_plot.png"
                 )
 
-        # Let the frontend know that a report is currently attached
-        # to this browser session.
+        # ----------------------------------------------------
+        # Tell frontend report context is active
+        # ----------------------------------------------------
+
         if report_context:
-            result["report_context_active"] = True
+
+            result[
+                "report_context_active"
+            ] = True
 
         return result
 
     except Exception as e:
+
         import traceback
+
         traceback.print_exc()
 
         raise HTTPException(
             status_code=500,
             detail=str(e),
         )
-
 
 
 # ============================================================
@@ -326,12 +362,24 @@ async def upload_image(
     text: str = Form(""),
 ):
     """
-    Existing image upload endpoint.
+    Handle medical image uploads.
 
-    Kept compatible with the existing MEDEASY frontend.
+    IMPORTANT:
+    The trained chest X-ray model is currently unavailable
+    because its model weights are not included.
+
+    Therefore this endpoint DOES NOT generate a fake diagnosis.
+
+    The image is saved successfully and the frontend receives
+    a clear message that X-ray analysis is unavailable.
     """
 
+    # --------------------------------------------------------
+    # Validate filename
+    # --------------------------------------------------------
+
     if not image.filename:
+
         raise HTTPException(
             status_code=400,
             detail="No image selected.",
@@ -339,10 +387,15 @@ async def upload_image(
 
     filename = image.filename
 
-    extension = filename.rsplit(
-        ".",
-        1
-    )[-1].lower() if "." in filename else ""
+    # --------------------------------------------------------
+    # Validate extension
+    # --------------------------------------------------------
+
+    extension = (
+        filename.rsplit(".", 1)[-1].lower()
+        if "." in filename
+        else ""
+    )
 
     if extension not in {
         "png",
@@ -360,7 +413,10 @@ async def upload_image(
 
     try:
 
+        # ----------------------------------------------------
         # Read image
+        # ----------------------------------------------------
+
         image_data = await image.read()
 
         if not image_data:
@@ -370,10 +426,19 @@ async def upload_image(
                 detail="Uploaded image is empty.",
             )
 
+        # ----------------------------------------------------
         # Save image
+        # ----------------------------------------------------
+
         safe_name = secure_filename(
             filename
         )
+
+        if not safe_name:
+
+            safe_name = (
+                f"medical_image.{extension}"
+            )
 
         unique_name = (
             f"{uuid.uuid4()}_{safe_name}"
@@ -395,26 +460,36 @@ async def upload_image(
             f"Image uploaded: {image_path}"
         )
 
-        # Existing demo response
+        # ----------------------------------------------------
+        # NO FAKE X-RAY RESULT
+        # ----------------------------------------------------
+
         return {
-            "status": "success",
+            "status": "unavailable",
             "agent": "CHEST_XRAY_AGENT",
             "response": """
-### Chest X-Ray Analysis Result
+### Chest X-Ray Analysis
 
-The uploaded image has been analyzed successfully.
+The chest X-ray was uploaded successfully.
 
-### Findings:
-- Mild abnormality detected
-- No severe disease found
-- Patient condition appears stable
+However, the trained chest X-ray analysis model
+is currently unavailable because its model weights
+are not included in this installation.
 
-### Recommendation:
-Please consult a healthcare professional for proper diagnosis.
+**No medical prediction was generated.**
+
+Please consult a qualified healthcare professional
+for interpretation of the uploaded X-ray.
 """,
+            "image_uploaded": True,
+            "image_path": (
+                f"/uploads/frontend/"
+                f"{unique_name}"
+            ),
         }
 
     except HTTPException:
+
         raise
 
     except Exception as e:
@@ -425,7 +500,9 @@ Please consult a healthcare professional for proper diagnosis.
 
         raise HTTPException(
             status_code=500,
-            detail=str(e),
+            detail=(
+                f"Error processing image: {str(e)}"
+            ),
         )
 
 
@@ -443,12 +520,17 @@ async def upload_medical_report(
     """
     Upload and parse a PDF medical report.
 
-    The extracted report text is also stored against the browser
-    session so that later /chat requests can answer questions
+    The extracted report text is stored against the browser
+    session so later /chat requests can answer questions
     about the same report.
     """
 
+    # --------------------------------------------------------
+    # Validate filename
+    # --------------------------------------------------------
+
     if not report.filename:
+
         raise HTTPException(
             status_code=400,
             detail="No medical report selected.",
@@ -456,60 +538,97 @@ async def upload_medical_report(
 
     filename = report.filename
 
-    # Only PDFs.
+    # --------------------------------------------------------
+    # Only PDFs
+    # --------------------------------------------------------
+
     if not filename.lower().endswith(".pdf"):
+
         raise HTTPException(
             status_code=400,
-            detail="Only PDF medical reports are supported.",
+            detail=(
+                "Only PDF medical reports "
+                "are supported."
+            ),
         )
 
-    # Create a session ID if this is the first request.
+    # --------------------------------------------------------
+    # Create session ID
+    # --------------------------------------------------------
+
     if not session_id:
-        session_id = str(uuid.uuid4())
+
+        session_id = str(
+            uuid.uuid4()
+        )
 
     try:
+
         os.makedirs(
             MEDICAL_REPORT_FOLDER,
             exist_ok=True,
         )
 
-        # Secure filename.
-        safe_name = secure_filename(filename)
+        # ----------------------------------------------------
+        # Secure filename
+        # ----------------------------------------------------
+
+        safe_name = secure_filename(
+            filename
+        )
 
         if not safe_name:
-            safe_name = "medical_report.pdf"
 
-        # Unique filename so multiple uploads do not overwrite
-        # each other.
-        unique_name = f"{uuid.uuid4()}_{safe_name}"
+            safe_name = (
+                "medical_report.pdf"
+            )
+
+        # ----------------------------------------------------
+        # Unique filename
+        # ----------------------------------------------------
+
+        unique_name = (
+            f"{uuid.uuid4()}_{safe_name}"
+        )
 
         report_path = os.path.join(
             MEDICAL_REPORT_FOLDER,
             unique_name,
         )
 
-        # Read PDF.
+        # ----------------------------------------------------
+        # Read PDF
+        # ----------------------------------------------------
+
         report_content = await report.read()
 
         if not report_content:
+
             raise HTTPException(
                 status_code=400,
-                detail="The uploaded PDF is empty.",
+                detail=(
+                    "The uploaded PDF is empty."
+                ),
             )
 
-        # Save PDF.
+        # ----------------------------------------------------
+        # Save PDF
+        # ----------------------------------------------------
+
         with open(
             report_path,
             "wb",
         ) as f:
+
             f.write(report_content)
 
         print(
-            f"Medical report saved: {report_path}"
+            f"Medical report saved: "
+            f"{report_path}"
         )
 
         # ====================================================
-        # PARSE PDF WITH EXISTING DOCLING PARSER
+        # PARSE PDF WITH DOCLING
         # ====================================================
 
         parser = MedicalDocParser()
@@ -521,7 +640,13 @@ async def upload_medical_report(
                 image_resolution_scale=2.0,
                 do_ocr=True,
                 do_tables=True,
+
+                # IMPORTANT:
+                # Formula enrichment disabled because
+                # it caused the transformer tokenizer
+                # error in the local installation.
                 do_formulas=False,
+
                 do_picture_desc=False,
             )
         )
@@ -536,25 +661,29 @@ async def upload_medical_report(
 
         report_text = ""
 
-        # Docling Markdown export.
         try:
+
             report_text = (
-                parsed_document.export_to_markdown()
+                parsed_document
+                .export_to_markdown()
             )
 
         except Exception as markdown_error:
+
             print(
                 "Markdown extraction failed:",
                 markdown_error,
             )
 
-            # Try text export.
             try:
+
                 report_text = (
-                    parsed_document.export_to_text()
+                    parsed_document
+                    .export_to_text()
                 )
 
             except Exception as text_error:
+
                 print(
                     "Text extraction failed:",
                     text_error,
@@ -572,6 +701,7 @@ async def upload_medical_report(
             not report_text
             or not report_text.strip()
         ):
+
             raise HTTPException(
                 status_code=422,
                 detail=(
@@ -581,24 +711,31 @@ async def upload_medical_report(
             )
 
         # ====================================================
-        # STORE REPORT FOR THIS BROWSER SESSION
+        # STORE REPORT IN SESSION
         # ====================================================
 
-        REPORT_SESSIONS[session_id] = report_text
+        REPORT_SESSIONS[
+            session_id
+        ] = report_text
 
         print(
             "Medical report stored in session."
         )
+
         print(
             "Session ID:",
             session_id,
         )
+
         print(
             "Extracted report characters:",
             len(report_text),
         )
 
-        # Keep the same session cookie for future /chat calls.
+        # ----------------------------------------------------
+        # Keep same session cookie
+        # ----------------------------------------------------
+
         response.set_cookie(
             key="session_id",
             value=session_id,
@@ -612,29 +749,39 @@ async def upload_medical_report(
             "status": "success",
             "agent": "MEDICAL_REPORT_AGENT",
             "filename": filename,
+
             "response": (
                 "### Medical Report Uploaded "
                 "Successfully\n\n"
+
                 f"**File:** {filename}\n\n"
+
                 "The medical report was successfully "
                 "read and parsed.\n\n"
-                "The report has been kept in the current "
-                "session, so you can now ask follow-up "
-                "questions about its contents without "
-                "uploading it again."
+
+                "The report has been kept in the "
+                "current session, so you can now ask "
+                "follow-up questions about its contents "
+                "without uploading it again."
             ),
+
             "report_text": report_text,
+
             "extracted_images": len(
                 extracted_images
             ),
+
             "report_context_active": True,
         }
 
     except HTTPException:
+
         raise
 
     except Exception as e:
+
         import traceback
+
         traceback.print_exc()
 
         raise HTTPException(
@@ -644,7 +791,6 @@ async def upload_medical_report(
                 f"{str(e)}"
             ),
         )
-
 
 
 # ============================================================
@@ -663,7 +809,10 @@ def validate_medical_output(
     """
 
     if not session_id:
-        session_id = str(uuid.uuid4())
+
+        session_id = str(
+            uuid.uuid4()
+        )
 
     try:
 
@@ -694,10 +843,12 @@ def validate_medical_output(
 
             return {
                 "status": "validated",
+
                 "message": (
                     "**Output confirmed by "
                     "human validator:**"
                 ),
+
                 "response": (
                     response_data[
                         "messages"
@@ -709,11 +860,14 @@ def validate_medical_output(
 
             return {
                 "status": "rejected",
+
                 "comments": comments,
+
                 "message": (
                     "**Output requires further "
                     "review:**"
                 ),
+
                 "response": (
                     response_data[
                         "messages"
@@ -762,12 +916,15 @@ async def transcribe_audio(
             exist_ok=True,
         )
 
+        # ----------------------------------------------------
+        # Save temporary WebM
+        # ----------------------------------------------------
+
         temp_audio = (
             f"./{SPEECH_DIR}/"
             f"speech_{uuid.uuid4()}.webm"
         )
 
-        # Read audio
         audio_content = await audio.read()
 
         with open(
@@ -871,6 +1028,7 @@ async def transcribe_audio(
                         f"API error: "
                         f"{transcription}"
                     ),
+
                     "details":
                         transcription.text,
                 },
@@ -895,7 +1053,10 @@ async def transcribe_audio(
 
         finally:
 
+            # ------------------------------------------------
             # Clean temporary files
+            # ------------------------------------------------
+
             try:
 
                 if (
@@ -978,7 +1139,9 @@ async def request_entity_too_large(
         status_code=413,
         content={
             "status": "error",
+
             "agent": "System",
+
             "response": (
                 "File too large. Maximum "
                 "size allowed: "
