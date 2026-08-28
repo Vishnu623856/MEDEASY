@@ -383,17 +383,23 @@
         }
 
         .message table {
-            width:100%;
-            border-collapse:collapse;
-            margin:10px 0;
-            font-size:12px;
+            width: 100%;
+            border-collapse: collapse;
+            margin: 16px 0;
+            font-size: 14px;
+            line-height: 1.5;
+            overflow: hidden;
+            border-radius: 8px;
+            display: block;
+            overflow-x: auto;
         }
 
         .message th,
         .message td {
-            border:1px solid #dddfe7;
-            padding:7px;
-            text-align:left;
+            border: 1px solid #d9dce5;
+            padding: 10px 12px;
+            text-align: left;
+            vertical-align: top;
         }
 
         .message th {
@@ -975,6 +981,12 @@
 ========================================================== -->
 
 <script src="https://cdn.jsdelivr.net/npm/marked@4.0.2/lib/marked.umd.js"></script>
+<script>
+    marked.setOptions({
+        gfm: true,
+        breaks: true
+    });
+</script>
 
 
 <script>

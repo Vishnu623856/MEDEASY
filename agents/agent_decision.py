@@ -1,12 +1,37 @@
 import json
-from typing import Dict, List, Optional, Any, Literal, TypedDict, Union, Annotated
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
+from typing import (
+    Dict,
+    List,
+    Optional,
+    Any,
+    Literal,
+    TypedDict,
+    Union,
+    Annotated,
+)
+
+from langchain_core.messages import (
+    HumanMessage,
+    AIMessage,
+    SystemMessage,
+    BaseMessage,
+)
+
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.runnables import RunnablePassthrough
-from langgraph.graph import MessagesState, StateGraph, END
-import os, getpass
+
+from langgraph.graph import (
+    MessagesState,
+    StateGraph,
+    END,
+)
+
+import os
+import getpass
+
 from dotenv import load_dotenv
+
 from agents.rag_agent import MedicalRAG
 from agents.web_search_processor_agent import WebSearchProcessorAgent
 from agents.image_analysis_agent import ImageAnalysisAgent
@@ -19,714 +44,2240 @@ import numpy as np
 
 from config import Config
 
+
+# ============================================================
+# LOAD ENVIRONMENT
+# ============================================================
+
 load_dotenv()
 
-# Load configuration
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
 config = Config()
 
-# Initialize memory
+
+# ============================================================
+# LANGGRAPH MEMORY
+# ============================================================
+
 memory = MemorySaver()
 
-# Specify a thread
-thread_config = {"configurable": {"thread_id": "1"}}
+thread_config = {
+    "configurable": {
+        "thread_id": "1"
+    }
+}
 
 
-# Agent that takes the decision of routing the request further to correct task specific agent
+# ============================================================
+# AGENT CONFIGURATION
+# ============================================================
+
 class AgentConfig:
-    """Configuration settings for the agent decision system."""
-    
-    # Decision model
-    DECISION_MODEL = "gpt-4o"  # or whichever model you prefer
-    
-    # Vision model for image analysis
-    VISION_MODEL = "gpt-4o"
-    
-    # Confidence threshold for responses
-    CONFIDENCE_THRESHOLD = 0.85
-    
-    # System instructions for the decision agent
-    DECISION_SYSTEM_PROMPT = """You are an intelligent medical triage system that routes user queries to 
-    the appropriate specialized agent. Your job is to analyze the user's request and determine which agent 
-    is best suited to handle it based on the query content, presence of images, and conversation context.
-
-    Available agents:
-    1. CONVERSATION_AGENT - For general chat, greetings, and non-medical questions.
-    2. RAG_AGENT - For specific medical knowledge questions that can be answered from established medical literature. Currently ingested medical knowledge involves 'introduction to brain tumor', 'deep learning techniques to diagnose and detect brain tumors', 'deep learning techniques to diagnose and detect covid / covid-19 from chest x-ray'.
-    3. WEB_SEARCH_PROCESSOR_AGENT - For questions about recent medical developments, current outbreaks, or time-sensitive medical information.
-    4. BRAIN_TUMOR_AGENT - For analysis of brain MRI images to detect and segment tumors.
-    5. CHEST_XRAY_AGENT - For analysis of chest X-ray images to detect abnormalities.
-    6. SKIN_LESION_AGENT - For analysis of skin lesion images to classify them as benign or malignant.
-
-    Make your decision based on these guidelines:
-    - If the user has not uploaded any image, always route to the conversation agent.
-    - If the user uploads a medical image, decide which medical vision agent is appropriate based on the image type and the user's query. If the image is uploaded without a query, always route to the correct medical vision agent based on the image type.
-    - If the user asks about recent medical developments or current health situations, use the web search pocessor agent.
-    - If the user asks specific medical knowledge questions, use the RAG agent.
-    - For general conversation, greetings, or non-medical questions, use the conversation agent. But if image is uploaded, always go to the medical vision agents first.
-
-    You must provide your answer in JSON format with the following structure:
-    {{
-    "agent": "AGENT_NAME",
-    "reasoning": "Your step-by-step reasoning for selecting this agent",
-    "confidence": 0.95  // Value between 0.0 and 1.0 indicating your confidence in this decision
-    }}
+    """
+    Configuration settings for the agent decision system.
     """
 
-    image_analyzer = ImageAnalysisAgent(config=config)
+    # --------------------------------------------------------
+    # Decision model
+    # --------------------------------------------------------
+
+    DECISION_MODEL = "gpt-4o"
+
+    # --------------------------------------------------------
+    # Vision model
+    # --------------------------------------------------------
+
+    VISION_MODEL = "gpt-4o"
+
+    # --------------------------------------------------------
+    # Confidence threshold
+    # --------------------------------------------------------
+
+    CONFIDENCE_THRESHOLD = 0.85
+
+    # ========================================================
+    # DECISION SYSTEM PROMPT
+    # ========================================================
+
+    DECISION_SYSTEM_PROMPT = """
+You are an intelligent medical triage and routing system.
+
+Your job is to determine which specialized agent should handle
+the user's request.
+
+IMPORTANT ROUTING RULES:
+
+1. CONVERSATION_AGENT
+Use ONLY for:
+- greetings
+- casual conversation
+- non-medical questions
+- simple everyday questions that do not require medical knowledge
+
+Examples:
+"Hello"
+"How are you?"
+"What is the weather?"
+"What should I eat for breakfast?"
+
+2. RAG_AGENT
+Use for MEDICAL KNOWLEDGE QUESTIONS.
+
+If the user asks about a disease, disorder, symptom, risk factor,
+diagnostic test, laboratory test, treatment concept, anatomy,
+medical imaging, prevention, medical terminology, or established
+medical knowledge, prefer RAG_AGENT.
+
+This applies even when the question is short or general.
+
+Examples:
+"What are the risk factors for cardiovascular disease?"
+"What is hypertension?"
+"What are the symptoms of asthma?"
+"What tests assess kidney function?"
+"What is HbA1c?"
+"What is the difference between CT and MRI?"
+"What are common symptoms of diabetes?"
+"What are the causes of anemia?"
+"What are common treatments for cancer?"
+"What is pneumonia?"
+"What is an ECG?"
+
+The medical knowledge base contains broad medical information
+covering areas including:
+- general medicine
+- cardiology
+- neurology
+- respiratory medicine
+- endocrinology
+- diabetes
+- gastroenterology
+- liver disease
+- nephrology
+- kidney disease
+- oncology
+- infectious diseases
+- dermatology
+- hematology
+- musculoskeletal medicine
+- psychiatry and mental health
+- medical laboratory tests
+- medical imaging
+- brain tumors
+- brain MRI
+- chest X-ray
+- medical AI
+- deep learning in medical imaging
+- preventive health
+
+It also contains specialized documents about:
+- brain tumor detection
+- deep learning for brain tumors
+- COVID-19 and chest X-ray analysis
+
+IMPORTANT:
+Do NOT send a medical knowledge question to
+CONVERSATION_AGENT merely because no image is uploaded.
+
+3. WEB_SEARCH_PROCESSOR_AGENT
+Use when the user specifically asks for:
+- recent medical developments
+- latest medical research
+- current outbreaks
+- current statistics
+- newly approved treatments
+- current medical guidelines
+- information that may have changed recently
+
+Examples:
+"What is the latest treatment for Alzheimer's disease?"
+"What are the latest COVID variants?"
+"What medical discoveries happened this month?"
+
+4. BRAIN_TUMOR_AGENT
+Use when the user uploads a brain MRI or asks to analyze
+a brain MRI image for a tumor.
+
+5. CHEST_XRAY_AGENT
+Use when the user uploads a chest X-ray for image analysis.
+
+6. SKIN_LESION_AGENT
+Use when the user uploads a skin lesion image for classification.
+
+IMAGE RULE:
+If an image is uploaded, prioritize the appropriate medical
+vision agent based on the image type and user's request.
+
+If an image is uploaded without a clear description:
+- chest/radiograph-looking image -> CHEST_XRAY_AGENT
+- brain MRI -> BRAIN_TUMOR_AGENT
+- skin lesion/photo of lesion -> SKIN_LESION_AGENT
+
+DECISION PRIORITY:
+
+1. Medical image analysis -> appropriate vision agent
+2. Current/recent medical information -> WEB_SEARCH_PROCESSOR_AGENT
+3. Specific or established medical knowledge -> RAG_AGENT
+4. General/non-medical conversation -> CONVERSATION_AGENT
+
+When uncertain between CONVERSATION_AGENT and RAG_AGENT for a
+medical question, choose RAG_AGENT.
+
+Return ONLY valid JSON:
+
+{{
+    "agent": "AGENT_NAME",
+    "reasoning": "Brief explanation of why this agent was selected",
+    "confidence": 0.95
+}}
+
+The confidence value must be between 0.0 and 1.0.
+"""
 
 
 class AgentState(MessagesState):
-    """State maintained across the workflow."""
-    # messages: List[BaseMessage]  # Conversation history
-    agent_name: Optional[str]  # Current active agent
-    current_input: Optional[Union[str, Dict]]  # Input to be processed
-    has_image: bool  # Whether the current input contains an image
-    image_type: Optional[str]  # Type of medical image if present
-    output: Optional[str]  # Final output to user
-    needs_human_validation: bool  # Whether human validation is required
-    retrieval_confidence: float  # Confidence in retrieval (for RAG agent)
-    bypass_routing: bool  # Flag to bypass agent routing for guardrails
-    insufficient_info: bool  # Flag indicating RAG response has insufficient information
+    """
+    State maintained across the workflow.
+    """
 
+    agent_name: Optional[str]
+
+    current_input: Optional[
+        Union[str, Dict]
+    ]
+
+    has_image: bool
+
+    image_type: Optional[str]
+
+    output: Optional[str]
+
+    needs_human_validation: bool
+
+    retrieval_confidence: float
+
+    bypass_routing: bool
+
+    insufficient_info: bool
+
+
+    current_input: Optional[
+        Union[str, Dict]
+    ]
+
+    has_image: bool
+
+    image_type: Optional[str]
+
+    output: Optional[str]
+
+    needs_human_validation: bool
+
+    retrieval_confidence: float
+
+    bypass_routing: bool
+
+    insufficient_info: bool
+
+
+# ============================================================
+# AGENT DECISION TYPE
+# ============================================================
 
 class AgentDecision(TypedDict):
-    """Output structure for the decision agent."""
+    """
+    Output structure for the decision agent.
+    """
+
     agent: str
     reasoning: str
     confidence: float
 
 
+# ============================================================
+# CREATE AGENT GRAPH
+# ============================================================
+
 def create_agent_graph():
-    """Create and configure the LangGraph for agent orchestration."""
+    """
+    Create and configure the LangGraph for agent orchestration.
+    """
 
-    # Initialize guardrails with the same LLM used elsewhere
-    guardrails = LocalGuardrails(config.rag.llm)
+    # ========================================================
+    # GUARDRAILS
+    # ========================================================
 
-    # LLM
-    decision_model = config.agent_decision.llm
-    
-    # Initialize the output parser
-    json_parser = JsonOutputParser(pydantic_object=AgentDecision)
-    
-    # Create the decision prompt
-    decision_prompt = ChatPromptTemplate.from_messages([
-        ("system", AgentConfig.DECISION_SYSTEM_PROMPT),
-        ("human", "{input}")
-    ])
-    
-    # Create the decision chain
-    decision_chain = decision_prompt | decision_model | json_parser
-    
-    # Define graph state transformations
-    def analyze_input(state: AgentState) -> AgentState:
-        """Analyze the input to detect images and determine input type."""
-        current_input = state["current_input"]
+    guardrails = LocalGuardrails(
+        config.rag.llm
+    )
+
+
+    # ========================================================
+    # DECISION MODEL
+    # ========================================================
+
+    decision_model = (
+        config.agent_decision.llm
+    )
+
+
+    # ========================================================
+    # JSON PARSER
+    # ========================================================
+
+    json_parser = JsonOutputParser(
+        pydantic_object=AgentDecision
+    )
+
+
+    # ========================================================
+    # DECISION PROMPT
+    # ========================================================
+
+    decision_prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                AgentConfig.DECISION_SYSTEM_PROMPT,
+            ),
+            (
+                "human",
+                "{input}",
+            ),
+        ]
+    )
+
+
+    # ========================================================
+    # DECISION CHAIN
+    # ========================================================
+
+    decision_chain = (
+        decision_prompt
+        | decision_model
+        | json_parser
+    )
+
+
+    # ========================================================
+    # ANALYZE INPUT
+    # ========================================================
+
+    def analyze_input(
+        state: AgentState
+    ) -> AgentState:
+        """
+        Analyze the input to detect images and
+        determine input type.
+        """
+
+        current_input = state[
+            "current_input"
+        ]
+
         has_image = False
         image_type = None
-        
-        # Get the text from the input
+
+
+        # ----------------------------------------------------
+        # Extract text
+        # ----------------------------------------------------
+
         input_text = ""
-        if isinstance(current_input, str):
+
+        if isinstance(
+            current_input,
+            str,
+        ):
+
             input_text = current_input
-        elif isinstance(current_input, dict):
-            input_text = current_input.get("text", "")
-        
-        # Check input through guardrails if text is present
+
+        elif isinstance(
+            current_input,
+            dict,
+        ):
+
+            input_text = current_input.get(
+                "text",
+                "",
+            )
+
+
+        # ----------------------------------------------------
+        # Guardrails
+        # ----------------------------------------------------
+
         if input_text:
-            is_allowed, message = guardrails.check_input(input_text)
+
+            is_allowed, message = (
+                guardrails.check_input(
+                    input_text
+                )
+            )
+
             if not is_allowed:
-                # If input is blocked, return early with guardrail message
-                print(f"Selected agent: INPUT GUARDRAILS, Message: ", message)
+
+                print(
+                    "Selected agent: "
+                    "INPUT GUARDRAILS, "
+                    "Message:",
+                    message,
+                )
+
                 return {
                     **state,
+
                     "messages": message,
-                    "agent_name": "INPUT_GUARDRAILS",
+
+                    "agent_name":
+                        "INPUT_GUARDRAILS",
+
                     "has_image": False,
+
                     "image_type": None,
-                    "bypass_routing": True  # flag to end flow
+
+                    "bypass_routing": True,
                 }
-       
-        # Simple direct image routing
-        if isinstance(current_input, dict) and "image" in current_input:
+
+
+        # ====================================================
+        # IMAGE DETECTION
+        # ====================================================
+
+        if (
+            isinstance(
+                current_input,
+                dict,
+            )
+            and "image" in current_input
+        ):
+
             has_image = True
-            image_path = current_input.get("image", None)
 
-            input_text_lower = input_text.lower()
+            input_text_lower = (
+                input_text.lower()
+            )
 
+
+            # ------------------------------------------------
             # Brain MRI
-            if "brain" in input_text_lower or "mri" in input_text_lower or "tumor" in input_text_lower:
-                image_type = "brain_mri"
+            # ------------------------------------------------
 
+            if (
+                "brain"
+                in input_text_lower
+                or "mri"
+                in input_text_lower
+                or "tumor"
+                in input_text_lower
+            ):
+
+                image_type = (
+                    "brain_mri"
+                )
+
+
+            # ------------------------------------------------
             # Skin lesion
-            elif "skin" in input_text_lower or "lesion" in input_text_lower or "melanoma" in input_text_lower:
-                image_type = "skin_lesion"
+            # ------------------------------------------------
 
-            # Default = chest xray
+            elif (
+                "skin"
+                in input_text_lower
+                or "lesion"
+                in input_text_lower
+                or "melanoma"
+                in input_text_lower
+                or "mole"
+                in input_text_lower
+            ):
+
+                image_type = (
+                    "skin_lesion"
+                )
+
+
+            # ------------------------------------------------
+            # Chest X-ray
+            # ------------------------------------------------
+
             else:
-                image_type = "chest_xray"
 
-            print("DIRECT IMAGE TYPE:", image_type)        
+                image_type = (
+                    "chest_xray"
+                )
+
+
+            print(
+                "DIRECT IMAGE TYPE:",
+                image_type,
+            )
+
+
+        # ====================================================
+        # RETURN STATE
+        # ====================================================
+
         return {
             **state,
+
             "has_image": has_image,
+
             "image_type": image_type,
-            "bypass_routing": False  # Explicitly set to False for normal flow
+
+            "bypass_routing": False,
         }
-    
-    def check_if_bypassing(state: AgentState) -> str:
-        """Check if we should bypass normal routing due to guardrails."""
-        if state.get("bypass_routing", False):
-            return "apply_guardrails"
-        return "route_to_agent"
-    
-    def route_to_agent(state: AgentState) -> Dict:
-        """Make decision about which agent should handle the query."""
-        messages = state["messages"]
-        current_input = state["current_input"]
-        has_image = state["has_image"]
-        image_type = state["image_type"]
-        
-        # Prepare input for decision model
-        input_text = ""
-        if isinstance(current_input, str):
-            input_text = current_input
-        elif isinstance(current_input, dict):
-            input_text = current_input.get("text", "")
-        
-        # Create context from recent conversation history (last 3 messages)
-        recent_context = ""
-        for msg in messages[-6:]:  # Get last 3 exchanges (6 messages)  # Not provided control from config
-            if isinstance(msg, HumanMessage):
-                recent_context += f"User: {msg.content}\n"
-            elif isinstance(msg, AIMessage):
-                recent_context += f"Assistant: {msg.content}\n"
-        
-        # Combine everything for the decision input
-        decision_input = f"""
-        User query: {input_text}
 
-        Recent conversation context:
-        {recent_context}
 
-        Has image: {has_image}
-        Image type: {image_type if has_image else 'None'}
+    # ========================================================
+    # CHECK BYPASS
+    # ========================================================
 
-        Based on this information, which agent should handle this query?
+    def check_if_bypassing(
+        state: AgentState
+    ) -> str:
         """
-        # Direct routing for uploaded images
+        Check if routing should be bypassed because
+        guardrails blocked the input.
+        """
+
+        if state.get(
+            "bypass_routing",
+            False,
+        ):
+
+            return "apply_guardrails"
+
+        return "route_to_agent"
+
+
+    # ========================================================
+    # ROUTE TO AGENT
+    # ========================================================
+
+    def route_to_agent(
+        state: AgentState
+    ) -> Dict:
+        """
+        Determine which agent should handle the query.
+        """
+
+        messages = state[
+            "messages"
+        ]
+
+        current_input = state[
+            "current_input"
+        ]
+
+        has_image = state[
+            "has_image"
+        ]
+
+        image_type = state[
+            "image_type"
+        ]
+
+
+        # ----------------------------------------------------
+        # Extract query text
+        # ----------------------------------------------------
+
+        input_text = ""
+
+        if isinstance(
+            current_input,
+            str,
+        ):
+
+            input_text = current_input
+
+        elif isinstance(
+            current_input,
+            dict,
+        ):
+
+            input_text = current_input.get(
+                "text",
+                "",
+            )
+
+
+        # ----------------------------------------------------
+        # Recent conversation context
+        # ----------------------------------------------------
+
+        recent_context = ""
+
+        for msg in messages[-6:]:
+
+            if isinstance(
+                msg,
+                HumanMessage,
+            ):
+
+                recent_context += (
+                    f"User: {msg.content}\n"
+                )
+
+            elif isinstance(
+                msg,
+                AIMessage,
+            ):
+
+                recent_context += (
+                    f"Assistant: {msg.content}\n"
+                )
+
+
+        # ====================================================
+        # DIRECT IMAGE ROUTING
+        # ====================================================
+
         if has_image:
 
+            # ------------------------------------------------
+            # Brain MRI
+            # ------------------------------------------------
+
             if image_type == "brain_mri":
+
+                print(
+                    "Decision: "
+                    "BRAIN_TUMOR_AGENT"
+                )
+
                 return {
                     **state,
-                    "agent_name": "BRAIN_TUMOR_AGENT",
-                    "next": "BRAIN_TUMOR_AGENT"
+
+                    "agent_name":
+                        "BRAIN_TUMOR_AGENT",
+
+                    "next":
+                        "BRAIN_TUMOR_AGENT",
                 }
+
+
+            # ------------------------------------------------
+            # Skin lesion
+            # ------------------------------------------------
 
             elif image_type == "skin_lesion":
+
+                print(
+                    "Decision: "
+                    "SKIN_LESION_AGENT"
+                )
+
                 return {
                     **state,
-                    "agent_name": "SKIN_LESION_AGENT",
-                    "next": "SKIN_LESION_AGENT"
+
+                    "agent_name":
+                        "SKIN_LESION_AGENT",
+
+                    "next":
+                        "SKIN_LESION_AGENT",
                 }
+
+
+            # ------------------------------------------------
+            # Chest X-ray
+            # ------------------------------------------------
 
             else:
+
+                print(
+                    "Decision: "
+                    "CHEST_XRAY_AGENT"
+                )
+
                 return {
                     **state,
-                    "agent_name": "CHEST_XRAY_AGENT",
-                    "next": "CHEST_XRAY_AGENT"
-                }
-        # Make the decision
-        decision = decision_chain.invoke({"input": decision_input})
 
-        # Decided agent
-        print(f"Decision: {decision['agent']}")
-        
-        # Update state with decision
+                    "agent_name":
+                        "CHEST_XRAY_AGENT",
+
+                    "next":
+                        "CHEST_XRAY_AGENT",
+                }
+
+
+        # ====================================================
+        # DECISION MODEL
+        # ====================================================
+
+        decision_input = f"""
+User query:
+{input_text}
+
+Recent conversation context:
+{recent_context}
+
+Has image:
+{has_image}
+
+Image type:
+{image_type if has_image else "None"}
+
+Important routing instructions:
+
+- No image does NOT automatically mean Conversation Agent.
+- Specific medical knowledge questions should go to RAG_AGENT.
+- Questions about indexed medical documents should go to RAG_AGENT.
+- Questions about previously uploaded medical reports should go to RAG_AGENT.
+- Current/latest/recent medical questions should go to
+  WEB_SEARCH_PROCESSOR_AGENT.
+- General conversation should go to CONVERSATION_AGENT.
+
+Which agent should handle this query?
+"""
+
+
+        # ----------------------------------------------------
+        # Call decision model
+        # ----------------------------------------------------
+
+        try:
+
+            decision = decision_chain.invoke(
+                {
+                    "input":
+                        decision_input
+                }
+            )
+
+        except Exception as e:
+
+            print(
+                "Decision model error:",
+                str(e),
+            )
+
+            # ------------------------------------------------
+            # Safe fallback routing
+            # ------------------------------------------------
+
+            query_lower = (
+                input_text.lower()
+            )
+
+
+            # Current information
+            current_keywords = [
+                "latest",
+                "recent",
+                "current",
+                "today",
+                "currently",
+                "newly published",
+                "recent research",
+                "latest research",
+            ]
+
+            if any(
+                keyword in query_lower
+                for keyword in current_keywords
+            ):
+
+                fallback_agent = (
+                    "WEB_SEARCH_PROCESSOR_AGENT"
+                )
+
+
+            # RAG knowledge
+            elif any(
+                keyword in query_lower
+                for keyword in [
+                    "according to the medical documents",
+                    "according to the documents",
+                    "knowledge base",
+                    "indexed documents",
+                    "medical literature",
+                    "brain tumor detection",
+                    "brain tumour detection",
+                    "deep learning techniques",
+                    "brain tumor",
+                    "brain tumour",
+                ]
+            ):
+
+                fallback_agent = (
+                    "RAG_AGENT"
+                )
+
+
+            # General conversation
+            else:
+
+                fallback_agent = (
+                    "CONVERSATION_AGENT"
+                )
+
+
+            print(
+                "Fallback Decision:",
+                fallback_agent,
+            )
+
+            return {
+                **state,
+
+                "agent_name":
+                    fallback_agent,
+
+                "next":
+                    fallback_agent,
+            }
+
+
+        # ====================================================
+        # VALIDATE DECISION
+        # ====================================================
+
+        valid_agents = {
+            "CONVERSATION_AGENT",
+            "RAG_AGENT",
+            "WEB_SEARCH_PROCESSOR_AGENT",
+            "BRAIN_TUMOR_AGENT",
+            "CHEST_XRAY_AGENT",
+            "SKIN_LESION_AGENT",
+        }
+
+
+        selected_agent = decision.get(
+            "agent",
+            "CONVERSATION_AGENT",
+        )
+
+
+        if (
+            selected_agent
+            not in valid_agents
+        ):
+
+            print(
+                "Invalid agent returned:",
+                selected_agent,
+            )
+
+            selected_agent = (
+                "CONVERSATION_AGENT"
+            )
+
+
+        confidence = decision.get(
+            "confidence",
+            0.0,
+        )
+
+
+        # ====================================================
+        # DEBUG
+        # ====================================================
+
+        print(
+            f"Decision: {selected_agent}"
+        )
+
+        print(
+            f"Decision confidence: "
+            f"{confidence}"
+        )
+
+        print(
+            f"Decision reasoning: "
+            f"{decision.get('reasoning', '')}"
+        )
+
+
+        # ====================================================
+        # UPDATE STATE
+        # ====================================================
+
         updated_state = {
             **state,
-            "agent_name": decision["agent"],
+
+            "agent_name":
+                selected_agent,
         }
-        
-        # Route based on agent name and confidence
-        if decision["confidence"] < AgentConfig.CONFIDENCE_THRESHOLD:
-            return {**updated_state, "next": "needs_validation"}
-        
-        return {**updated_state, "next": decision["agent"]}
 
-    # Define agent execution functions (these will be implemented in their respective modules)
-    def run_conversation_agent(state: AgentState) -> AgentState:
-        """Handle general conversation."""
 
-        print(f"Selected agent: CONVERSATION_AGENT")
+        # ====================================================
+        # CONFIDENCE ROUTING
+        # ====================================================
 
-        messages = state["messages"]
-        current_input = state["current_input"]
-        
-        # Prepare input for decision model
-        input_text = ""
-        if isinstance(current_input, str):
-            input_text = current_input
-        elif isinstance(current_input, dict):
-            input_text = current_input.get("text", "")
-        
-        # Create context from recent conversation history
-        recent_context = ""
-        for msg in messages:#[-20:]:  # Get last 10 exchanges (20 messages)  # currently considering complete history - limit control from config
-            if isinstance(msg, HumanMessage):
-                # print("######### DEBUG 1:", msg)
-                recent_context += f"User: {msg.content}\n"
-            elif isinstance(msg, AIMessage):
-                # print("######### DEBUG 2:", msg)
-                recent_context += f"Assistant: {msg.content}\n"
-        
-        # Combine everything for the decision input
-        conversation_prompt = f"""User query: {input_text}
+        if (
+            confidence
+            < AgentConfig.CONFIDENCE_THRESHOLD
+        ):
 
-        Recent conversation context: {recent_context}
+            # For low-confidence RAG-like queries,
+            # use RAG rather than silently answering
+            # as general conversation.
 
-        You are an AI-powered Medical Conversation Assistant. Your goal is to facilitate smooth and informative conversations with users, handling both casual and medical-related queries. You must respond naturally while ensuring medical accuracy and clarity.
+            query_lower = (
+                input_text.lower()
+            )
 
-        ### Role & Capabilities
-        - Engage in **general conversation** while maintaining professionalism.
-        - Answer **medical questions** using verified knowledge.
-        - Route **complex queries** to RAG (retrieval-augmented generation) or web search if needed.
-        - Handle **follow-up questions** while keeping track of conversation context.
-        - Redirect **medical images** to the appropriate AI analysis agent.
+            rag_indicators = [
+                "medical document",
+                "medical documents",
+                "knowledge base",
+                "indexed document",
+                "indexed documents",
+                "medical literature",
+                "research paper",
+                "brain tumor",
+                "brain tumour",
+                "deep learning",
+                "covid",
+                "covid-19",
+                "chest x-ray",
+            ]
 
-        ### Guidelines for Responding:
-        1. **General Conversations:**
-        - If the user engages in casual talk (e.g., greetings, small talk), respond in a friendly, engaging manner.
-        - Keep responses **concise and engaging**, unless a detailed answer is needed.
-
-        2. **Medical Questions:**
-        - If you have **high confidence** in answering, provide a medically accurate response.
-        - Ensure responses are **clear, concise, and factual**.
-
-        3. **Follow-Up & Clarifications:**
-        - Maintain conversation history for better responses.
-        - If a query is unclear, ask **follow-up questions** before answering.
-
-        4. **Handling Medical Image Analysis:**
-        - Do **not** attempt to analyze images yourself.
-        - If user speaks about analyzing or processing or detecting or segmenting or classifying any disease from any image, ask the user to upload the image so that in the next turn it is routed to the appropriate medical vision agents.
-        - If an image was uploaded, it would have been routed to the medical computer vision agents. Read the history to know about the diagnosis results and continue conversation if user asks anything regarding the diagnosis.
-        - After processing, **help the user interpret the results**.
-
-        5. **Uncertainty & Ethical Considerations:**
-        - If unsure, **never assume** medical facts.
-        - Recommend consulting a **licensed healthcare professional** for serious medical concerns.
-        - Avoid providing **medical diagnoses** or **prescriptions**—stick to general knowledge.
-
-        ### Response Format:
-        - Maintain a **conversational yet professional tone**.
-        - Use **bullet points or numbered lists** for clarity when needed.
-        - If pulling from external sources (RAG/Web Search), mention **where the information is from** (e.g., "According to Mayo Clinic...").
-        - If a user asks for a diagnosis, remind them to **seek medical consultation**.
-
-        ### Example User Queries & Responses:
-
-        **User:** "Hey, how's your day going?"
-        **You:** "I'm here and ready to help! How can I assist you today?"
-
-        **User:** "I have a headache and fever. What should I do?"
-        **You:** "I'm not a doctor, but headaches and fever can have various causes, from infections to dehydration. If your symptoms persist, you should see a medical professional."
-
-        Conversational LLM Response:"""
-
-        # print("Conversation Prompt:", conversation_prompt)
-
-        response = config.conversation.llm.invoke(conversation_prompt)
-
-        # print("Conversation respone:", response)
-
-        # response = AIMessage(content="This would be handled by the conversation agent.")
-
-        return {
-            **state,
-            "output": response,
-            "agent_name": "CONVERSATION_AGENT"
-        }
-    
-    def run_rag_agent(state: AgentState) -> AgentState:
-        """Handle medical knowledge queries using RAG."""
-        # Initialize the RAG agent
-
-        print(f"Selected agent: RAG_AGENT")
-
-        rag_agent = MedicalRAG(config)
-        
-        messages = state["messages"]
-        query = state["current_input"]
-        rag_context_limit = config.rag.context_limit
-
-        recent_context = ""
-        for msg in messages[-rag_context_limit:]:# limit controlled from config
-            if isinstance(msg, HumanMessage):
-                # print("######### DEBUG 1:", msg)
-                recent_context += f"User: {msg.content}\n"
-            elif isinstance(msg, AIMessage):
-                # print("######### DEBUG 2:", msg)
-                recent_context += f"Assistant: {msg.content}\n"
-
-        response = rag_agent.process_query(query, chat_history=recent_context)
-        retrieval_confidence = response.get("confidence", 0.0)  # Default to 0.0 if not provided
-
-        print(f"Retrieval Confidence: {retrieval_confidence}")
-        print(f"Sources: {len(response['sources'])}")
-
-        # Check if response indicates insufficient information
-        insufficient_info = False
-        response_content = response["response"]
-        
-        # Extract the content properly based on type
-        if isinstance(response_content, BaseMessage):
-            # If it's an AIMessage or similar object with a content attribute
-            response_text = response_content.content
-        else:
-            # If it's already a string
-            response_text = response_content
-            
-        print(f"Response text type: {type(response_text)}")
-        print(f"Response text preview: {response_text[:100]}...")
-        
-        if isinstance(response_text, str) and (
-            "I don't have enough information to answer this question based on the provided context" in response_text or 
-            "I don't have enough information" in response_text or 
-            "don't have enough information" in response_text.lower() or
-            "not enough information" in response_text.lower() or
-            "insufficient information" in response_text.lower() or
-            "cannot answer" in response_text.lower() or
-            "unable to answer" in response_text.lower()
+            if any(
+                indicator in query_lower
+                for indicator in rag_indicators
             ):
-            
-            print("RAG response indicates insufficient information")
-            print(f"Response text that triggered insufficient_info: {response_text[:100]}...")
-            insufficient_info = True
 
-        print(f"Insufficient info flag set to: {insufficient_info}")
+                print(
+                    "Low confidence but "
+                    "query matches RAG topic. "
+                    "Routing to RAG_AGENT."
+                )
 
-        # Store RAG output ONLY if confidence is high
-        if retrieval_confidence >= config.rag.min_retrieval_confidence:
-            # response_output = response["response"]
-            response_output = AIMessage(content=response_text)
-        else:
-            response_output = AIMessage(content="")
-        
+                return {
+                    **updated_state,
+
+                    "agent_name":
+                        "RAG_AGENT",
+
+                    "next":
+                        "RAG_AGENT",
+                }
+
+            return {
+                **updated_state,
+
+                "next":
+                    "needs_validation",
+            }
+
+
         return {
-            **state,
-            "output": response_output,
-            "needs_human_validation": False,  # Assuming no validation needed for RAG responses
-            "retrieval_confidence": retrieval_confidence,
-            "agent_name": "RAG_AGENT",
-            "insufficient_info": insufficient_info
+            **updated_state,
+
+            "next":
+                selected_agent,
         }
 
-    # Web Search Processor Node
-    def run_web_search_processor_agent(state: AgentState) -> AgentState:
-        """Handles web search results, processes them with LLM, and generates a refined response."""
 
-        print(f"Selected agent: WEB_SEARCH_PROCESSOR_AGENT")
-        print("[WEB_SEARCH_PROCESSOR_AGENT] Processing Web Search Results...")
-        
-        messages = state["messages"]
-        web_search_context_limit = config.web_search.context_limit
+    # ========================================================
+    # CONVERSATION AGENT
+    # ========================================================
+
+    def run_conversation_agent(
+        state: AgentState
+    ) -> AgentState:
+        """
+        Handle general conversation.
+        """
+
+        print(
+            "Selected agent: "
+            "CONVERSATION_AGENT"
+        )
+
+        messages = state[
+            "messages"
+        ]
+
+        current_input = state[
+            "current_input"
+        ]
+
+
+        # ----------------------------------------------------
+        # Extract text
+        # ----------------------------------------------------
+
+        input_text = ""
+
+        if isinstance(
+            current_input,
+            str,
+        ):
+
+            input_text = current_input
+
+        elif isinstance(
+            current_input,
+            dict,
+        ):
+
+            input_text = current_input.get(
+                "text",
+                "",
+            )
+
+
+        # ----------------------------------------------------
+        # Conversation context
+        # ----------------------------------------------------
 
         recent_context = ""
-        for msg in messages[-web_search_context_limit:]: # limit controlled from config
-            if isinstance(msg, HumanMessage):
-                # print("######### DEBUG 1:", msg)
-                recent_context += f"User: {msg.content}\n"
-            elif isinstance(msg, AIMessage):
-                # print("######### DEBUG 2:", msg)
-                recent_context += f"Assistant: {msg.content}\n"
 
-        web_search_processor = WebSearchProcessorAgent(config)
+        for msg in messages:
 
-        processed_response = web_search_processor.process_web_search_results(query=state["current_input"], chat_history=recent_context)
+            if isinstance(
+                msg,
+                HumanMessage,
+            ):
 
-        # print("######### DEBUG WEB SEARCH:", processed_response)
-        
-        if state['agent_name'] != None:
-            involved_agents = f"{state['agent_name']}, WEB_SEARCH_PROCESSOR_AGENT"
-        else:
-            involved_agents = "WEB_SEARCH_PROCESSOR_AGENT"
+                recent_context += (
+                    f"User: {msg.content}\n"
+                )
 
-        # Overwrite any previous output with the processed Web Search response
+            elif isinstance(
+                msg,
+                AIMessage,
+            ):
+
+                recent_context += (
+                    f"Assistant: {msg.content}\n"
+                )
+
+
+        # ====================================================
+        # CONVERSATION PROMPT
+        # ====================================================
+
+        conversation_prompt = f"""
+User query:
+{input_text}
+
+Recent conversation context:
+{recent_context}
+
+You are an AI-powered Medical Conversation Assistant.
+
+Your goal is to facilitate smooth and informative
+conversations with users while maintaining medical
+accuracy and clarity.
+
+Capabilities:
+
+- Engage in general conversation.
+- Answer general medical questions.
+- Keep answers clear and concise.
+- Maintain conversation context.
+- Explain medical concepts in simple language.
+- Recommend professional medical evaluation when
+  appropriate.
+
+Important:
+
+Do not pretend to diagnose a patient.
+
+Do not prescribe medication.
+
+Do not claim that an image was analyzed if an image
+analysis agent has not actually produced a result.
+
+If the user asks about complex medical knowledge that
+requires retrieval, that query should normally have
+already been routed to RAG_AGENT.
+
+If the user asks for current/latest information, that
+query should normally have already been routed to the
+web search agent.
+
+Response style:
+
+- Professional
+- Clear
+- Conversational
+- Use bullet points when useful
+- Avoid unnecessary technical language
+
+User question:
+{input_text}
+
+Answer:
+"""
+
+
+        # ====================================================
+        # GENERATE RESPONSE
+        # ====================================================
+
+        response = (
+            config.conversation.llm.invoke(
+                conversation_prompt
+            )
+        )
+
+
+        # ====================================================
+        # RETURN
+        # ====================================================
+
         return {
             **state,
-            # "output": "This would be handled by the web search agent, finding the latest information.",
-            "output": processed_response,
-            "agent_name": involved_agents
+
+            "output":
+                response,
+
+            "agent_name":
+                "CONVERSATION_AGENT",
         }
 
-    # Define Routing Logic
-    def confidence_based_routing(state: AgentState) -> Dict[str, str]:
-        """Route based on RAG confidence score and response content."""
-        # Debug prints
-        print(f"Routing check - Retrieval confidence: {state.get('retrieval_confidence', 0.0)}")
-        print(f"Routing check - Insufficient info flag: {state.get('insufficient_info', False)}")
-        
-        # Redirect if confidence is low or if response indicates insufficient info
-        if (state.get("retrieval_confidence", 0.0) < config.rag.min_retrieval_confidence or 
-            state.get("insufficient_info", False)):
-            print("Re-routed to Web Search Agent due to low confidence or insufficient information...")
-            return "WEB_SEARCH_PROCESSOR_AGENT"  # Correct format
-        return "check_validation"  # No transition needed if confidence is high and info is sufficient
-    
-    # Create the workflow graph
-    workflow = StateGraph(AgentState)
-    
-    # Add nodes for each step
-    workflow.add_node("analyze_input", analyze_input)
-    workflow.add_node("route_to_agent", route_to_agent)
-    workflow.add_node("CONVERSATION_AGENT", run_conversation_agent)
-    workflow.add_node("RAG_AGENT", run_rag_agent)
-    workflow.add_node("WEB_SEARCH_PROCESSOR_AGENT", run_web_search_processor_agent)
-    workflow.add_node("BRAIN_TUMOR_AGENT", run_brain_tumor_agent)
-    workflow.add_node("CHEST_XRAY_AGENT", run_chest_xray_agent)
-    workflow.add_node("SKIN_LESION_AGENT", run_skin_lesion_agent)
-    workflow.add_node("check_validation", handle_human_validation)
-    workflow.add_node("needs_validation", perform_human_validation)
-    workflow.add_node("human_validation", perform_human_validation)
-    workflow.add_node("apply_guardrails", apply_output_guardrails)
-    
-    # Define the edges (workflow connections)
-    workflow.set_entry_point("analyze_input")
-    # workflow.add_edge("analyze_input", "route_to_agent")
-    # Add conditional routing for guardrails bypass
+
+    # ========================================================
+    # RAG AGENT
+    # ========================================================
+
+    def run_rag_agent(
+        state: AgentState
+    ) -> AgentState:
+        """
+        Handle medical knowledge queries using RAG.
+        """
+
+        print(
+            "Selected agent: RAG_AGENT"
+        )
+
+
+        # ----------------------------------------------------
+        # Initialize RAG
+        # ----------------------------------------------------
+
+        rag_agent = MedicalRAG(
+            config
+        )
+
+
+        messages = state[
+            "messages"
+        ]
+
+        query = state[
+            "current_input"
+        ]
+
+        rag_context_limit = (
+            config.rag.context_limit
+        )
+
+
+        # ----------------------------------------------------
+        # Conversation context
+        # ----------------------------------------------------
+
+        recent_context = ""
+
+        for msg in messages[
+            -rag_context_limit:
+        ]:
+
+            if isinstance(
+                msg,
+                HumanMessage,
+            ):
+
+                recent_context += (
+                    f"User: {msg.content}\n"
+                )
+
+            elif isinstance(
+                msg,
+                AIMessage,
+            ):
+
+                recent_context += (
+                    f"Assistant: {msg.content}\n"
+                )
+
+
+        # ====================================================
+        # PROCESS RAG QUERY
+        # ====================================================
+
+        response = rag_agent.process_query(
+            query,
+            chat_history=recent_context,
+        )
+
+
+        retrieval_confidence = response.get(
+            "confidence",
+            0.0,
+        )
+
+
+        print(
+            f"Retrieval Confidence: "
+            f"{retrieval_confidence}"
+        )
+
+        print(
+            f"Sources: "
+            f"{len(response['sources'])}"
+        )
+
+
+        # ====================================================
+        # CHECK INSUFFICIENT INFORMATION
+        # ====================================================
+
+        insufficient_info = False
+
+        response_content = (
+            response["response"]
+        )
+
+
+        if isinstance(
+            response_content,
+            BaseMessage,
+        ):
+
+            response_text = (
+                response_content.content
+            )
+
+        else:
+
+            response_text = (
+                response_content
+            )
+
+
+        print(
+            "Response text type:",
+            type(response_text),
+        )
+
+
+        print(
+            "Response text preview:",
+            response_text[:100],
+            "...",
+        )
+
+
+        # ----------------------------------------------------
+        # Detect insufficient information
+        # ----------------------------------------------------
+
+        if isinstance(
+            response_text,
+            str,
+        ):
+
+            insufficient_phrases = [
+                "I don't have enough information",
+                "don't have enough information",
+                "not enough information",
+                "insufficient information",
+                "cannot answer",
+                "unable to answer",
+            ]
+
+            if any(
+                phrase.lower()
+                in response_text.lower()
+                for phrase in insufficient_phrases
+            ):
+
+                print(
+                    "RAG response indicates "
+                    "insufficient information"
+                )
+
+                insufficient_info = True
+
+
+        print(
+            "Insufficient info flag set to:",
+            insufficient_info,
+        )
+
+
+        # ====================================================
+        # CREATE OUTPUT
+        # ====================================================
+
+        # Keep the generated RAG response.
+        # Retrieval confidence is a ranking score and should
+        # not cause an otherwise valid answer to be erased.
+
+        response_output = AIMessage(
+            content=response_text
+        )
+
+        # ====================================================
+        # RETURN
+        # ====================================================
+
+        return {
+            **state,
+
+            "output":
+                response_output,
+
+            "needs_human_validation":
+                False,
+
+            "retrieval_confidence":
+                retrieval_confidence,
+
+            "agent_name":
+                "RAG_AGENT",
+
+            "insufficient_info":
+                insufficient_info,
+        }
+
+
+    # ========================================================
+    # WEB SEARCH PROCESSOR
+    # ========================================================
+
+    def run_web_search_processor_agent(
+        state: AgentState
+    ) -> AgentState:
+        """
+        Process web search results and generate a response.
+        """
+
+        print(
+            "Selected agent: "
+            "WEB_SEARCH_PROCESSOR_AGENT"
+        )
+
+        print(
+            "[WEB_SEARCH_PROCESSOR_AGENT] "
+            "Processing Web Search Results..."
+        )
+
+
+        messages = state[
+            "messages"
+        ]
+
+        web_search_context_limit = (
+            config.web_search.context_limit
+        )
+
+
+        # ----------------------------------------------------
+        # Recent context
+        # ----------------------------------------------------
+
+        recent_context = ""
+
+        for msg in messages[
+            -web_search_context_limit:
+        ]:
+
+            if isinstance(
+                msg,
+                HumanMessage,
+            ):
+
+                recent_context += (
+                    f"User: {msg.content}\n"
+                )
+
+            elif isinstance(
+                msg,
+                AIMessage,
+            ):
+
+                recent_context += (
+                    f"Assistant: {msg.content}\n"
+                )
+
+
+        # ----------------------------------------------------
+        # Web search agent
+        # ----------------------------------------------------
+
+        web_search_processor = (
+            WebSearchProcessorAgent(
+                config
+            )
+        )
+
+
+        processed_response = (
+            web_search_processor.process_web_search_results(
+                query=state[
+                    "current_input"
+                ],
+                chat_history=recent_context,
+            )
+        )
+
+
+        # ----------------------------------------------------
+        # Agent tracking
+        # ----------------------------------------------------
+
+        if state[
+            "agent_name"
+        ] is not None:
+
+            involved_agents = (
+                f"{state['agent_name']}, "
+                "WEB_SEARCH_PROCESSOR_AGENT"
+            )
+
+        else:
+
+            involved_agents = (
+                "WEB_SEARCH_PROCESSOR_AGENT"
+            )
+
+
+        # ====================================================
+        # RETURN
+        # ====================================================
+
+        return {
+            **state,
+
+            "output":
+                processed_response,
+
+            "agent_name":
+                involved_agents,
+        }
+
+
+    # ========================================================
+    # CONFIDENCE BASED ROUTING
+    # ========================================================
+
+    def confidence_based_routing(
+        state: AgentState
+    ) -> str:
+        """
+        Route the RAG response.
+
+        Keep a valid RAG response even when the numeric
+        retrieval confidence is below the configured threshold.
+        Web search is used only when RAG explicitly reports
+        insufficient information.
+        """
+
+        retrieval_confidence = state.get(
+            "retrieval_confidence",
+            0.0
+        )
+
+        insufficient_info = state.get(
+            "insufficient_info",
+            False
+        )
+
+        print(
+            "Routing check - "
+            f"Retrieval confidence: "
+            f"{retrieval_confidence}"
+        )
+
+        print(
+            "Routing check - "
+            f"Insufficient info flag: "
+            f"{insufficient_info}"
+        )
+
+        # Only fall back to Web Search when RAG
+        # explicitly says it does not have enough information.
+        if insufficient_info:
+
+            print(
+                "RAG indicates insufficient information. "
+                "Routing to Web Search Agent..."
+            )
+
+            return "WEB_SEARCH_PROCESSOR_AGENT"
+
+        print(
+            "RAG has sufficient information. "
+            "Keeping RAG response."
+        )
+
+        return "check_validation"
+
+
+    # ========================================================
+    # CREATE WORKFLOW
+    # ========================================================
+
+    workflow = StateGraph(
+        AgentState
+    )
+
+
+    # ========================================================
+    # ADD NODES
+    # ========================================================
+
+    workflow.add_node(
+        "analyze_input",
+        analyze_input,
+    )
+
+    workflow.add_node(
+        "route_to_agent",
+        route_to_agent,
+    )
+
+    workflow.add_node(
+        "CONVERSATION_AGENT",
+        run_conversation_agent,
+    )
+
+    workflow.add_node(
+        "RAG_AGENT",
+        run_rag_agent,
+    )
+
+    workflow.add_node(
+        "WEB_SEARCH_PROCESSOR_AGENT",
+        run_web_search_processor_agent,
+    )
+
+    workflow.add_node(
+        "BRAIN_TUMOR_AGENT",
+        run_brain_tumor_agent,
+    )
+
+    workflow.add_node(
+        "CHEST_XRAY_AGENT",
+        run_chest_xray_agent,
+    )
+
+    workflow.add_node(
+        "SKIN_LESION_AGENT",
+        run_skin_lesion_agent,
+    )
+
+    workflow.add_node(
+        "check_validation",
+        handle_human_validation,
+    )
+
+    workflow.add_node(
+        "needs_validation",
+        perform_human_validation,
+    )
+
+    workflow.add_node(
+        "human_validation",
+        perform_human_validation,
+    )
+
+    workflow.add_node(
+        "apply_guardrails",
+        apply_output_guardrails,
+    )
+
+
+    # ========================================================
+    # ENTRY POINT
+    # ========================================================
+
+    workflow.set_entry_point(
+        "analyze_input"
+    )
+
+
+    # ========================================================
+    # GUARDRAIL ROUTING
+    # ========================================================
+
     workflow.add_conditional_edges(
         "analyze_input",
+
         check_if_bypassing,
+
         {
-            "apply_guardrails": "apply_guardrails",
-            "route_to_agent": "route_to_agent"
-        }
+            "apply_guardrails":
+                "apply_guardrails",
+
+            "route_to_agent":
+                "route_to_agent",
+        },
     )
-    
-    # Connect decision router to agents
+
+
+    # ========================================================
+    # AGENT ROUTING
+    # ========================================================
+
     workflow.add_conditional_edges(
         "route_to_agent",
+
         lambda x: x["next"],
+
         {
-            "CONVERSATION_AGENT": "CONVERSATION_AGENT",
-            "RAG_AGENT": "RAG_AGENT",
-            "WEB_SEARCH_PROCESSOR_AGENT": "WEB_SEARCH_PROCESSOR_AGENT",
-            "BRAIN_TUMOR_AGENT": "BRAIN_TUMOR_AGENT",
-            "CHEST_XRAY_AGENT": "CHEST_XRAY_AGENT",
-            "SKIN_LESION_AGENT": "SKIN_LESION_AGENT",
-            "needs_validation": "needs_validation"  # Default to RAG if confidence is low
-        }
+            "CONVERSATION_AGENT":
+                "CONVERSATION_AGENT",
+
+            "RAG_AGENT":
+                "RAG_AGENT",
+
+            "WEB_SEARCH_PROCESSOR_AGENT":
+                "WEB_SEARCH_PROCESSOR_AGENT",
+
+            "BRAIN_TUMOR_AGENT":
+                "BRAIN_TUMOR_AGENT",
+
+            "CHEST_XRAY_AGENT":
+                "CHEST_XRAY_AGENT",
+
+            "SKIN_LESION_AGENT":
+                "SKIN_LESION_AGENT",
+
+            "needs_validation":
+                "needs_validation",
+        },
     )
-    
-    # Connect agent outputs to validation check
-    workflow.add_edge("CONVERSATION_AGENT", "check_validation")
-    # workflow.add_edge("RAG_AGENT", "check_validation")
-    workflow.add_edge("WEB_SEARCH_PROCESSOR_AGENT", "check_validation")
-    workflow.add_conditional_edges("RAG_AGENT", confidence_based_routing)
-    workflow.add_edge("BRAIN_TUMOR_AGENT", "check_validation")
-    workflow.add_edge("CHEST_XRAY_AGENT", "check_validation")
-    workflow.add_edge("SKIN_LESION_AGENT", "check_validation")
-
-    #workflow.add_edge("human_validation", "apply_guardrails")
-    workflow.add_edge("apply_guardrails", END)
-    
-    workflow.add_edge("check_validation", "apply_guardrails")
-    workflow.add_edge("human_validation", "apply_guardrails")
-    
-    # workflow.add_edge("human_validation", END)
-    
-    # Compile the graph
-    return workflow.compile(checkpointer=memory)
 
 
-def run_brain_tumor_agent(state: AgentState) -> AgentState:
-    """Handle brain MRI image analysis."""
+    # ========================================================
+    # AGENT OUTPUT ROUTING
+    # ========================================================
 
-    print("Selected agent: BRAIN_TUMOR_AGENT")
+    workflow.add_edge(
+        "CONVERSATION_AGENT",
+        "check_validation",
+    )
+
+    workflow.add_edge(
+        "WEB_SEARCH_PROCESSOR_AGENT",
+        "check_validation",
+    )
+
+    workflow.add_conditional_edges(
+        "RAG_AGENT",
+        confidence_based_routing,
+    )
+
+    workflow.add_edge(
+        "BRAIN_TUMOR_AGENT",
+        "check_validation",
+    )
+
+    workflow.add_edge(
+        "CHEST_XRAY_AGENT",
+        "check_validation",
+    )
+
+    workflow.add_edge(
+        "SKIN_LESION_AGENT",
+        "check_validation",
+    )
+
+
+    # ========================================================
+    # GUARDRAILS
+    # ========================================================
+
+    workflow.add_edge(
+        "apply_guardrails",
+        END,
+    )
+
+
+    workflow.add_edge(
+        "check_validation",
+        "apply_guardrails",
+    )
+
+    workflow.add_edge(
+        "human_validation",
+        "apply_guardrails",
+    )
+
+
+    # ========================================================
+    # COMPILE
+    # ========================================================
+
+    return workflow.compile(
+        checkpointer=memory
+    )
+
+
+# ============================================================
+# BRAIN TUMOR AGENT
+# ============================================================
+
+def run_brain_tumor_agent(
+    state: AgentState
+) -> AgentState:
+    """
+    Handle brain MRI image analysis.
+
+    Actual model integration can be connected when
+    the trained brain-tumor model weights are available.
+    """
+
+    print(
+        "Selected agent: "
+        "BRAIN_TUMOR_AGENT"
+    )
+
 
     response = AIMessage(
         content="""
-### Brain MRI Analysis Result
+### Brain MRI Analysis
 
-The uploaded MRI image has been analyzed.
+The brain MRI was uploaded successfully.
 
-### Findings:
-- Possible small tumor region detected
-- Tumor severity: Moderate
+However, the trained brain-tumor analysis model
+is currently unavailable in this installation.
 
-### Recommendation:
-Please consult a neurologist or radiologist for detailed medical evaluation.
+**No medical prediction was generated.**
+
+Please consult a qualified radiologist or neurologist
+for interpretation of the MRI.
 """
     )
 
+
     return {
         **state,
-        "output": response,
-        "needs_human_validation": False,
-        "agent_name": "BRAIN_TUMOR_AGENT"
+
+        "output":
+            response,
+
+        "needs_human_validation":
+            False,
+
+        "agent_name":
+            "BRAIN_TUMOR_AGENT",
     }
 
 
-def run_chest_xray_agent(state: AgentState) -> AgentState:
-    """Handle chest X-ray image analysis."""
+# ============================================================
+# CHEST X-RAY AGENT
+# ============================================================
 
-    print("Selected agent: CHEST_XRAY_AGENT")
+def run_chest_xray_agent(
+    state: AgentState
+) -> AgentState:
+    """
+    Handle chest X-ray image analysis.
+
+    The trained chest X-ray model weights are currently
+    unavailable, so this function does NOT generate
+    fabricated medical findings.
+    """
+
+    print(
+        "Selected agent: "
+        "CHEST_XRAY_AGENT"
+    )
+
 
     response = AIMessage(
         content="""
-### Chest X-Ray Analysis Result
+### Chest X-Ray Analysis
 
-The uploaded chest X-ray has been analyzed successfully.
+The chest X-ray was uploaded successfully.
 
-### Findings:
-- Mild lung opacity detected
-- No severe abnormality observed
-- COVID-19 probability: Low
+However, the trained chest X-ray analysis model
+is currently unavailable in this installation.
 
-### Recommendation:
-Please consult a healthcare professional for proper diagnosis and further evaluation.
+**No medical prediction was generated.**
+
+Please consult a qualified healthcare professional
+for interpretation of the uploaded X-ray.
 """
     )
 
+
     return {
         **state,
-        "output": response,
-        "needs_human_validation": False,
-        "agent_name": "CHEST_XRAY_AGENT"
+
+        "output":
+            response,
+
+        "needs_human_validation":
+            False,
+
+        "agent_name":
+            "CHEST_XRAY_AGENT",
     }
 
 
-def run_skin_lesion_agent(state: AgentState) -> AgentState:
-    """Handle skin lesion image analysis."""
+# ============================================================
+# SKIN LESION AGENT
+# ============================================================
 
-    print("Selected agent: SKIN_LESION_AGENT")
+def run_skin_lesion_agent(
+    state: AgentState
+) -> AgentState:
+    """
+    Handle skin lesion image analysis.
 
-    response = AIMessage(
-        content="""
-### Skin Lesion Analysis Result
+    The actual skin-lesion inference implementation
+    exists in the image-analysis agent package.
+    """
 
-The uploaded skin lesion image has been analyzed.
-
-### Findings:
-- Lesion appears benign
-- No strong indication of melanoma detected
-
-### Recommendation:
-Consult a dermatologist for professional confirmation.
-"""
+    print(
+        "Selected agent: "
+        "SKIN_LESION_AGENT"
     )
 
+
+    # --------------------------------------------------------
+    # Try to use the existing ImageAnalysisAgent
+    # --------------------------------------------------------
+
+    try:
+
+        current_input = state[
+            "current_input"
+        ]
+
+        image_path = None
+
+        if isinstance(
+            current_input,
+            dict,
+        ):
+
+            image_path = current_input.get(
+                "image"
+            )
+
+
+        if image_path:
+
+            # Try common method names used by
+            # image-analysis implementations.
+
+            analyzer = (
+                AgentConfig.image_analyzer
+            )
+
+
+            if hasattr(
+                analyzer,
+                "analyze_image",
+            ):
+
+                result = (
+                    analyzer.analyze_image(
+                        image_path,
+                        "skin_lesion",
+                    )
+                )
+
+                if isinstance(
+                    result,
+                    BaseMessage,
+                ):
+
+                    response = result
+
+                else:
+
+                    response = AIMessage(
+                        content=str(result)
+                    )
+
+            else:
+
+                response = AIMessage(
+                    content="""
+### Skin Lesion Analysis
+
+The skin lesion image was uploaded successfully.
+
+The skin-lesion analysis agent is available,
+but the current image-analysis integration does
+not expose an `analyze_image` method.
+
+**No medical prediction was generated.**
+
+Please consult a dermatologist for professional
+evaluation.
+"""
+                )
+
+        else:
+
+            response = AIMessage(
+                content="""
+### Skin Lesion Analysis
+
+No image path was provided to the
+skin-lesion analysis agent.
+
+Please upload a skin lesion image again.
+"""
+            )
+
+
+    except Exception as e:
+
+        print(
+            "Skin lesion analysis error:",
+            str(e),
+        )
+
+        response = AIMessage(
+            content="""
+### Skin Lesion Analysis
+
+The image was received, but the skin-lesion
+analysis could not be completed.
+
+**No medical prediction was generated.**
+
+Please consult a dermatologist for professional
+evaluation.
+"""
+        )
+
+
     return {
         **state,
-        "output": response,
-        "needs_human_validation": False,
-        "agent_name": "SKIN_LESION_AGENT"
+
+        "output":
+            response,
+
+        "needs_human_validation":
+            False,
+
+        "agent_name":
+            "SKIN_LESION_AGENT",
     }
 
 
-def handle_human_validation(state: AgentState) -> AgentState:
-    """Skip validation and continue workflow."""
+# ============================================================
+# HUMAN VALIDATION CHECK
+# ============================================================
+
+def handle_human_validation(
+    state: AgentState
+) -> AgentState:
+    """
+    Skip validation by default and continue workflow.
+    """
 
     return {
         **state,
-        "needs_human_validation": False
+
+        "needs_human_validation":
+            False,
     }
 
 
-def perform_human_validation(state: AgentState) -> AgentState:
-    """Handle human validation process."""
+# ============================================================
+# HUMAN VALIDATION
+# ============================================================
 
-    print("Selected agent: HUMAN_VALIDATION")
+def perform_human_validation(
+    state: AgentState
+) -> AgentState:
+    """
+    Handle human validation process.
+    """
 
-    validation_prompt = f"{state['output'].content}\n\nValidation complete."
+    print(
+        "Selected agent: HUMAN_VALIDATION"
+    )
 
-    validation_message = AIMessage(content=validation_prompt)
+
+    output = state.get(
+        "output"
+    )
+
+
+    if isinstance(
+        output,
+        BaseMessage,
+    ):
+
+        output_content = (
+            output.content
+        )
+
+    else:
+
+        output_content = str(
+            output
+        )
+
+
+    validation_prompt = (
+        f"{output_content}\n\n"
+        "Validation complete."
+    )
+
+
+    validation_message = AIMessage(
+        content=validation_prompt
+    )
+
 
     return {
         **state,
-        "output": validation_message,
-        "agent_name": f"{state['agent_name']}, HUMAN_VALIDATION"
+
+        "output":
+            validation_message,
+
+        "agent_name":
+            f"{state['agent_name']}, "
+            "HUMAN_VALIDATION",
     }
 
 
-def apply_output_guardrails(state: AgentState) -> AgentState:
-    """Return only original response."""
+# ============================================================
+# OUTPUT GUARDRAILS
+# ============================================================
 
-    output = state.get("output")
+def apply_output_guardrails(
+    state: AgentState
+) -> AgentState:
+    """
+    Return the final response.
+    """
+
+    output = state.get(
+        "output"
+    )
+
+
     if output is None:
-        output = AIMessage(content="I’m sorry, I couldn’t generate a response.")
-    elif not isinstance(output, BaseMessage):
-        output = AIMessage(content=str(output))
+
+        output = AIMessage(
+            content=(
+                "I'm sorry, I couldn't "
+                "generate a response."
+            )
+        )
+
+
+    elif not isinstance(
+        output,
+        BaseMessage,
+    ):
+
+        output = AIMessage(
+            content=str(
+                output
+            )
+        )
+
 
     return {
         **state,
-        "messages": [output],
-        "output": output
+
+        "messages": [
+            output
+        ],
+
+        "output":
+            output,
     }
+
+
+# ============================================================
+# INITIAL STATE
+# ============================================================
 
 def init_agent_state() -> AgentState:
-    """Initialize the agent state with default values."""
+    """
+    Initialize the agent state with default values.
+    """
+
     return {
         "messages": [],
-        "agent_name": None,
-        "current_input": None,
-        "has_image": False,
-        "image_type": None,
-        "output": None,
-        "needs_human_validation": False,
-        "retrieval_confidence": 0.0,
-        "bypass_routing": False,
-        "insufficient_info": False
+
+        "agent_name":
+            None,
+
+        "current_input":
+            None,
+
+        "has_image":
+            False,
+
+        "image_type":
+            None,
+
+        "output":
+            None,
+
+        "needs_human_validation":
+            False,
+
+        "retrieval_confidence":
+            0.0,
+
+        "bypass_routing":
+            False,
+
+        "insufficient_info":
+            False,
     }
 
 
-def process_query(query: Union[str, Dict], conversation_history: List[BaseMessage] = None) -> str:
+# ============================================================
+# PROCESS QUERY
+# ============================================================
+
+def process_query(
+    query: Union[str, Dict],
+    conversation_history: List[
+        BaseMessage
+    ] = None,
+):
     """
-    Process a user query through the agent decision system.
-    
+    Process a user query through the
+    agent decision system.
+
     Args:
-        query: User input (text string or dict with text and image)
-        conversation_history: Optional list of previous messages, NOT NEEDED ANYMORE since the state saves the conversation history now
-        
+        query:
+            User input as either a string or a
+            dictionary containing text/image.
+
+        conversation_history:
+            Optional previous conversation messages.
+
     Returns:
-        Response from the appropriate agent
+        Final LangGraph state.
     """
-    # Initialize the graph
+
+    # ========================================================
+    # CREATE GRAPH
+    # ========================================================
+
     graph = create_agent_graph()
 
-    # # Save Graph Flowchart
-    # image_bytes = graph.get_graph().draw_mermaid_png()
-    # decoded = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), -1)
-    # cv2.imwrite("./assets/graph.png", decoded)
-    # print("Graph flowchart saved in assets.")
-    
-    # Initialize state
+
+    # ========================================================
+    # INITIAL STATE
+    # ========================================================
+
     state = init_agent_state()
-    # if conversation_history:
-    #     state["messages"] = conversation_history
-    
-    # Add the current query
+
+
+    # ========================================================
+    # OPTIONAL HISTORY
+    # ========================================================
+
+    if conversation_history:
+
+        try:
+
+            state["messages"] = (
+                conversation_history.copy()
+            )
+
+        except Exception:
+
+            pass
+
+
+    # ========================================================
+    # CURRENT INPUT
+    # ========================================================
+
     state["current_input"] = query
 
-    # To handle image upload case
-    if isinstance(query, dict):
-        query = query.get("text", "") + ", user uploaded an image for diagnosis."
-    
-    state["messages"] = [HumanMessage(content=query)]
 
-    # result = graph.invoke(state, thread_config)
-    result = graph.invoke(state, thread_config)
-    # print("######### DEBUG 4:", result)
-    # state["messages"] = [result["messages"][-1].content]
+    # ========================================================
+    # IMAGE INPUT
+    # ========================================================
 
-    # Keep history to reasonable size (ANOTHER OPTION: summarize and store before truncating history)
-    if len(result["messages"]) > config.max_conversation_history:  # Keep last config.max_conversation_history messages
-        result["messages"] = result["messages"][-config.max_conversation_history:]
+    if isinstance(
+        query,
+        dict,
+    ):
 
-    # visualize conversation history in console
-    for m in result["messages"]:
-        m.pretty_print()
-    
-    # Add the response to conversation history
+        text = query.get(
+            "text",
+            "",
+        )
+
+        state["messages"] = [
+            HumanMessage(
+                content=text
+            )
+        ]
+
+
+    else:
+
+        state["messages"] = [
+            HumanMessage(
+                content=query
+            )
+        ]
+
+
+    # ========================================================
+    # RUN GRAPH
+    # ========================================================
+
+    result = graph.invoke(
+        state,
+        thread_config,
+    )
+
+
+    # ========================================================
+    # LIMIT HISTORY
+    # ========================================================
+
+    if len(
+        result["messages"]
+    ) > config.max_conversation_history:
+
+        result["messages"] = (
+            result["messages"][
+                -config.max_conversation_history:
+            ]
+        )
+
+
+    # ========================================================
+    # PRINT HISTORY
+    # ========================================================
+
+    for message in result[
+        "messages"
+    ]:
+
+        try:
+
+            message.pretty_print()
+
+        except Exception:
+
+            print(
+                message
+            )
+
+
+    # ========================================================
+    # RETURN
+    # ========================================================
+
     return result

@@ -18,6 +18,7 @@ from fastapi import (
     Response,
     Cookie,
 )
+from groq import RateLimitError
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -339,16 +340,40 @@ USER QUESTION:
 
         return result
 
+    except RateLimitError as e:
+
+        import traceback
+        traceback.print_exc()
+
+        response.set_cookie(
+            key="session_id",
+            value=session_id,
+        )
+
+        return {
+            "status": "error",
+            "response": (
+                "The AI service has temporarily reached its usage limit. "
+                "Please wait a few minutes and try again."
+            ),
+            "agent": "SYSTEM",
+            "error_type": "rate_limit",
+        }
+
     except Exception as e:
 
         import traceback
-
         traceback.print_exc()
 
-        raise HTTPException(
-            status_code=500,
-            detail=str(e),
-        )
+        return {
+            "status": "error",
+            "response": (
+                "Sorry, something went wrong while processing your request. "
+                "Please try again."
+            ),
+            "agent": "SYSTEM",
+            "error_type": "internal_error",
+        }
 
 
 # ============================================================

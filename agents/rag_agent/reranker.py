@@ -91,7 +91,21 @@ class Reranker:
                 documents[i]["combined_score"] = (documents[i]["score"] + float(score)) / 2
             
             # Sort by combined score
-            reranked_docs = sorted(documents, key=lambda x: x["combined_score"], reverse=True)
+            reranked_docs = sorted(
+                documents,
+                key=lambda x: x["combined_score"],
+                reverse=True
+            )
+
+            # Debug: show scores and source files so we can
+            # verify retrieval quality before applying filtering.
+            for rank, doc in enumerate(reranked_docs, 1):
+                self.logger.info(
+                    f"   Rerank #{rank}: "
+                    f"score={doc.get('combined_score', 0.0):.4f}, "
+                    f"rerank={doc.get('rerank_score', 0.0):.4f}, "
+                    f"source={doc.get('source', 'unknown')}"
+                )
             
             # Limit to top_k if needed
             if self.top_k and len(reranked_docs) > self.top_k:

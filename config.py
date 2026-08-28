@@ -55,11 +55,11 @@ class RAGConfig:
         self.chunker_model = create_llm()
         self.response_generator_model = create_llm()
 
-        self.top_k = 5
+        self.top_k = 10
         self.vector_search_type = 'similarity'
 
         self.reranker_model = "cross-encoder/ms-marco-TinyBERT-L-6"
-        self.reranker_top_k = 3
+        self.reranker_top_k = 5
 
         self.max_context_length = 8192
 

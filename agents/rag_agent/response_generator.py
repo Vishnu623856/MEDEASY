@@ -211,24 +211,45 @@ class ResponseGenerator:
 
     def _calculate_confidence(self, documents: List[Dict[str, Any]]) -> float:
         """
-        Calculate confidence score based on retrieved documents.
-        
-        Args:
-            documents: Retrieved documents
-            
-        Returns:
-            Confidence score between 0 and 1
+        Calculate retrieval confidence using the strongest relevant
+        documents rather than averaging weak/unrelated results.
         """
         if not documents:
             return 0.0
-            
-        # Use combined score (both reranker and cosine similarity) if available, otherwise use original score
-        if "combined_score" in documents[0]:
-            scores = [doc.get("combined_score", 0) for doc in documents[:3]]
-        elif "rerank_score" in documents[0]:
-            scores = [doc.get("rerank_score", 0) for doc in documents[:3]]
-        else:
-            scores = [doc.get("score", 0) for doc in documents[:3]]
-            
-        # Average of top 3 document scores or fewer if less than 3
-        return sum(scores) / len(scores) if scores else 0.0
+
+        # Prefer reranker scores when available.
+        rerank_scores = [
+            float(doc.get("rerank_score", 0.0))
+            for doc in documents
+            if "rerank_score" in doc
+        ]
+
+        if rerank_scores:
+            rerank_scores.sort(reverse=True)
+
+            # The strongest result is the most important signal.
+            top_score = rerank_scores[0]
+
+            # Add a smaller contribution from the next two results.
+            supporting_scores = rerank_scores[1:3]
+
+            if supporting_scores:
+                support = sum(supporting_scores) / len(supporting_scores)
+                confidence = (0.70 * top_score) + (0.30 * support)
+            else:
+                confidence = top_score
+
+            # Cross-encoder scores are not guaranteed to be 0-1.
+            # Clamp the final confidence to a safe range.
+            return max(0.0, min(1.0, confidence))
+
+        # Fallback to vector retrieval scores.
+        scores = [
+            float(doc.get("score", 0.0))
+            for doc in documents[:3]
+        ]
+
+        if not scores:
+            return 0.0
+
+        return max(0.0, min(1.0, sum(scores) / len(scores)))

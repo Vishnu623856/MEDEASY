@@ -192,9 +192,53 @@ class ContentProcessor:
             split_points = llm_response.split("split_after:")[1].strip()
             split_after = [int(x.strip()) for x in split_points.replace(',', ' ').split()] 
 
-        # If no splits were suggested, return the whole text as one section
+        # If the LLM does not provide useful split points,
+        # fall back to size-based semantic-friendly chunks.
+        #
+        # This prevents an entire medical PDF from becoming
+        # one huge vector-store document.
+
         if not split_after:
-            return [chunked_text]
+            raw_chunks = re.findall(
+                r"<\|start_chunk_(\d+)\|>(.*?)<\|end_chunk_\1\|>",
+                chunked_text,
+                re.DOTALL
+            )
+
+            text_parts = [
+                text.strip()
+                for _, text in raw_chunks
+                if text.strip()
+            ]
+
+            if not text_parts:
+                return [chunked_text]
+
+            fallback_chunks = []
+            current_words = []
+            target_words = 400
+
+            for part in text_parts:
+                words = part.split()
+
+                if (
+                    current_words
+                    and len(current_words) + len(words)
+                    > target_words
+                ):
+                    fallback_chunks.append(
+                        " ".join(current_words).strip()
+                    )
+                    current_words = []
+
+                current_words.extend(words)
+
+            if current_words:
+                fallback_chunks.append(
+                    " ".join(current_words).strip()
+                )
+
+            return fallback_chunks
 
         # Find all chunk markers in the text
         chunk_pattern = r"<\|start_chunk_(\d+)\|>(.*?)<\|end_chunk_\1\|>"
