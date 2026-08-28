@@ -276,3 +276,4 @@ zipp==3.21.0
 zstandard==0.23.0
 # RAG dense embeddings: FastEmbedEmbeddings is provided by langchain-community + fastembed.
 # Default model: BAAI/bge-small-en-v1.5 (384 dimensions).
+groq
