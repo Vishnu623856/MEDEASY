@@ -84,6 +84,33 @@ for directory in [
     os.makedirs(directory, exist_ok=True)
 
 
+
+# ============================================================
+# INITIALIZE RAG DATABASE IF NOT PRESENT
+# ============================================================
+
+QDRANT_DB_PATH = "data/qdrant_db"
+
+if not os.path.exists(QDRANT_DB_PATH):
+    print("RAG database not found. Building knowledge base...")
+
+    import subprocess
+
+    subprocess.run(
+        [
+            "python",
+            "ingest_rag_data.py",
+            "--dir",
+            "data/medical_documents",
+        ],
+        check=True,
+    )
+
+    print("RAG knowledge base created successfully.")
+else:
+    print("RAG database already exists. Skipping ingestion.")
+
+
 # ============================================================
 # STATIC FILES
 # ============================================================
