@@ -28,7 +28,7 @@ class MedicalDocParser:
             image_resolution_scale: float = 2.0,
             do_ocr: bool = True,
             do_tables: bool = True,
-            do_formulas: bool = True,
+            do_formulas: bool = False,
             do_picture_desc: bool = False
         ) -> Tuple[Any, List[str]]:
         """
